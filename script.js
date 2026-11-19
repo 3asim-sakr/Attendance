@@ -1,7 +1,7 @@
 // ==========================================
 // 1. CONSTANTS & STATE MANAGEMENT
 // ==========================================
-const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwrYo_w4c282Nei3l5cSi4f5_FfFHBLC87tmzCyxlrECHoW3CYEMeU6b0aWcsGC8kT6/exec';
+const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxH1qUfqo_ckyfwcBK3JTUSJ-XekFjNbPS8S37GmKUyNNRovWg68oSmjOEQv4XsCVi-/exec';
 
 const COURSES = [
     { id: 'python', name: 'بايثون (Python)', code: 'PY' },
@@ -14,13 +14,10 @@ const COURSES = [
 
 const SECTIONS = Array.from({ length: 12 }, (_, i) => i + 1);
 
-const STORAGE_KEYS = {
-    ATTENDANCE: 'uni_attendance_records_v1',
-    ACTIVE_SESSION: 'uni_active_qr_session_v1'
-};
-
+let selectedDoctorCourse = null;
+let doctorSession = null; // Strictly scoped to the current doctor's tab/session
 let attendanceRecords = [];
-let activeSession = null;
+let openSessionsList = []; // All currently OPEN sessions across all doctors
 let html5QrcodeScanner = null;
 let isScannerStarting = false;
 let isScannerRunning = false;
@@ -32,7 +29,7 @@ let doctorPollTimer = null;
 // 2. PAGE DETECTION & INITIALIZATION
 // ==========================================
 function isDoctorPage() {
-    return Boolean(document.getElementById('doctor-view'));
+    return Boolean(document.getElementById('doctor-subject-gate'));
 }
 
 function isStudentPage() {
@@ -74,7 +71,7 @@ function parseQRPayload(rawText) {
             sessionId,
             course: courseName,
             section: String(section),
-            pin
+            pin: String(pin).toUpperCase()
         };
     }
 
@@ -96,7 +93,7 @@ function parseQRPayload(rawText) {
         sessionId: payload.sessionId,
         course: payload.course,
         section: String(payload.section),
-        pin: payload.pin
+        pin: String(payload.pin).toUpperCase()
     };
 }
 
@@ -113,7 +110,6 @@ function checkInAppBrowserWarning() {
 
 window.addEventListener('DOMContentLoaded', () => {
     populateDropdowns();
-    loadCachedState();
     bindLifecycleAndShortcuts();
 
     if (!isApiConfigured()) {
@@ -121,23 +117,18 @@ window.addEventListener('DOMContentLoaded', () => {
     }
 
     if (isDoctorPage()) {
-        renderAttendanceTable();
-        updateDashboardStats();
-        updateActiveSessionUI();
-        syncDoctorFromCloud(true);
-        startDoctorPolling();
+        renderSubjectGate();
+        showSubjectGate();
     } else if (isStudentPage()) {
         checkInAppBrowserWarning();
-        updateActiveSessionUI();
-        syncStudentSessionFromCloud();
+        updateStudentSessionHelper();
+        syncStudentSessionsFromCloud();
     }
 });
 
 function populateDropdowns() {
     const courseSelects = [
-        document.getElementById('prof-course'),
-        document.getElementById('student-course'),
-        document.getElementById('filter-course')
+        document.getElementById('student-course')
     ].filter(Boolean);
 
     COURSES.forEach(course => {
@@ -171,6 +162,15 @@ function bindLifecycleAndShortcuts() {
         });
     }
 
+    const studentCourseSelect = document.getElementById('student-course');
+    const studentSectionSelect = document.getElementById('student-section');
+    if (studentCourseSelect) {
+        studentCourseSelect.addEventListener('change', updateStudentSessionHelper);
+    }
+    if (studentSectionSelect) {
+        studentSectionSelect.addEventListener('change', updateStudentSessionHelper);
+    }
+
     document.addEventListener('keydown', (event) => {
         if (event.key === 'Escape') {
             closeProjectorModal();
@@ -181,10 +181,10 @@ function bindLifecycleAndShortcuts() {
     document.addEventListener('visibilitychange', () => {
         if (document.hidden) {
             stopCameraScanner();
-        } else if (isDoctorPage()) {
+        } else if (isDoctorPage() && selectedDoctorCourse) {
             syncDoctorFromCloud(false);
         } else if (isStudentPage()) {
-            syncStudentSessionFromCloud();
+            syncStudentSessionsFromCloud();
         }
     });
 
@@ -194,38 +194,15 @@ function bindLifecycleAndShortcuts() {
 // ==========================================
 // 3. CLOUD SYNC (GOOGLE SHEETS API)
 // ==========================================
-function loadCachedState() {
-    try {
-        const savedRecords = localStorage.getItem(STORAGE_KEYS.ATTENDANCE);
-        attendanceRecords = savedRecords ? JSON.parse(savedRecords) : [];
-        if (!Array.isArray(attendanceRecords)) attendanceRecords = [];
-
-        const savedSession = localStorage.getItem(STORAGE_KEYS.ACTIVE_SESSION);
-        activeSession = savedSession ? JSON.parse(savedSession) : null;
-    } catch (e) {
-        attendanceRecords = [];
-        activeSession = null;
-    }
-}
-
-function saveCachedState() {
-    try {
-        localStorage.setItem(STORAGE_KEYS.ATTENDANCE, JSON.stringify(attendanceRecords));
-        localStorage.setItem(STORAGE_KEYS.ACTIVE_SESSION, JSON.stringify(activeSession));
-    } catch (e) {
-        // Ignore storage quota errors in Private mode
-    }
-}
-
-async function apiGet(action) {
-    const url = `${GOOGLE_SCRIPT_URL}?action=${encodeURIComponent(action)}&t=${Date.now()}`;
+async function apiGet(paramsObj = {}) {
+    const query = new URLSearchParams({ ...paramsObj, t: String(Date.now()) });
+    const url = `${GOOGLE_SCRIPT_URL}?${query.toString()}`;
     const response = await fetch(url, { method: 'GET', cache: 'no-store' });
     if (!response.ok) throw new Error('Network response failed');
     return response.json();
 }
 
 async function apiPost(bodyObj) {
-    // Use text/plain to prevent CORS preflight OPTIONS requests on Google Apps Script
     const response = await fetch(GOOGLE_SCRIPT_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
@@ -235,14 +212,13 @@ async function apiPost(bodyObj) {
     return response.json();
 }
 
-async function syncStudentSessionFromCloud() {
+async function syncStudentSessionsFromCloud() {
     if (!isApiConfigured()) return;
     try {
-        const res = await apiGet('getSession');
-        if (res.status === 'ok') {
-            activeSession = res.activeSession || null;
-            saveCachedState();
-            updateActiveSessionUI();
+        const res = await apiGet({ action: 'getSessions' });
+        if (res.status === 'ok' && Array.isArray(res.openSessions)) {
+            openSessionsList = res.openSessions;
+            updateStudentSessionHelper();
         }
     } catch (e) {
         // Silent fail; student can still scan QR directly
@@ -250,28 +226,26 @@ async function syncStudentSessionFromCloud() {
 }
 
 async function syncDoctorFromCloud(isInitial = false) {
-    if (!isApiConfigured()) return;
+    if (!isApiConfigured() || !selectedDoctorCourse) return;
+    const requestedCourse = selectedDoctorCourse;
+
     try {
         const prevIds = new Set(attendanceRecords.map(r => r.id));
-        const res = await apiGet('getAll');
-        if (res.status === 'ok') {
-            if (res.activeSession && (!activeSession || activeSession.sessionId !== res.activeSession.sessionId)) {
-                activeSession = res.activeSession;
-                updateActiveSessionUI();
-            }
+        const res = await apiGet({ action: 'getAll', course: requestedCourse });
 
-            if (Array.isArray(res.records)) {
-                const newEntries = res.records.filter(r => !prevIds.has(r.id));
-                attendanceRecords = res.records;
-                saveCachedState();
-                renderAttendanceTable();
-                updateDashboardStats();
+        // Ignore stale response if doctor logged out or switched subject while request was in flight
+        if (selectedDoctorCourse !== requestedCourse) return;
 
-                if (!isInitial && newEntries.length > 0) {
-                    const latestName = newEntries[0].studentName;
-                    const extra = newEntries.length > 1 ? ` (+${newEntries.length - 1} آخرين)` : '';
-                    showToast(`تم تسجيل حضور: ${latestName}${extra}`, 'success');
-                }
+        if (res.status === 'ok' && Array.isArray(res.records)) {
+            const newEntries = res.records.filter(r => !prevIds.has(r.id));
+            attendanceRecords = res.records;
+            renderAttendanceTable();
+            updateDashboardStats();
+
+            if (!isInitial && newEntries.length > 0) {
+                const latestName = newEntries[0].studentName;
+                const extra = newEntries.length > 1 ? ` (+${newEntries.length - 1} آخرين)` : '';
+                showToast(`تم تسجيل حضور: ${latestName}${extra}`, 'success');
             }
         }
     } catch (e) {
@@ -280,16 +254,105 @@ async function syncDoctorFromCloud(isInitial = false) {
 }
 
 function startDoctorPolling() {
-    if (doctorPollTimer) clearInterval(doctorPollTimer);
+    stopDoctorPolling();
     doctorPollTimer = setInterval(() => {
-        if (!document.hidden) {
+        if (!document.hidden && selectedDoctorCourse) {
             syncDoctorFromCloud(false);
         }
     }, 5000);
 }
 
+function stopDoctorPolling() {
+    if (doctorPollTimer) {
+        clearInterval(doctorPollTimer);
+        doctorPollTimer = null;
+    }
+}
+
 // ==========================================
-// 4. PROFESSOR LOGIC (QR GENERATION & TABLE)
+// 4. DOCTOR SUBJECT GATE & LOGOUT RESET
+// ==========================================
+function renderSubjectGate() {
+    const grid = document.getElementById('subject-cards-grid');
+    if (!grid) return;
+
+    grid.innerHTML = '';
+    COURSES.forEach(course => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.onclick = () => enterDoctorSubject(course.name);
+        btn.className = 'group bg-white hover:bg-blue-50/40 rounded-3xl border border-slate-200/90 hover:border-blue-400 p-6 text-right shadow-sm hover:shadow-md transition-all flex items-center justify-between gap-4 active:scale-[0.99]';
+        btn.innerHTML = `
+            <div class="space-y-1.5">
+                <span class="inline-block px-2.5 py-0.5 rounded-lg bg-indigo-50 text-indigo-700 font-mono text-xs font-extrabold">${escapeHTML(course.code)}</span>
+                <h2 class="text-base font-extrabold text-slate-900 group-hover:text-blue-700 transition-colors">${escapeHTML(course.name)}</h2>
+                <p class="text-xs text-slate-500">فتح لوحة حضور السكاشن</p>
+            </div>
+            <div class="w-11 h-11 rounded-2xl bg-slate-100 group-hover:bg-blue-600 text-slate-600 group-hover:text-white flex items-center justify-center shrink-0 transition-colors">
+                <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+            </div>
+        `;
+        grid.appendChild(btn);
+    });
+}
+
+function showSubjectGate() {
+    const gate = document.getElementById('doctor-subject-gate');
+    const dashboard = document.getElementById('doctor-dashboard-wrapper');
+    if (dashboard) dashboard.classList.add('hidden');
+    if (gate) gate.classList.remove('hidden');
+}
+
+function enterDoctorSubject(courseName) {
+    // Always start with a completely clean session state
+    selectedDoctorCourse = courseName;
+    doctorSession = null;
+    attendanceRecords = [];
+
+    document.getElementById('header-selected-course').textContent = courseName;
+    document.getElementById('panel-course-name').textContent = courseName;
+    document.getElementById('prof-section').value = '1';
+    document.getElementById('filter-section').value = 'ALL';
+    document.getElementById('filter-search').value = '';
+
+    updateDoctorSessionUI(false);
+    updateDashboardStats();
+    renderAttendanceTable();
+
+    document.getElementById('doctor-subject-gate').classList.add('hidden');
+    document.getElementById('doctor-dashboard-wrapper').classList.remove('hidden');
+
+    syncDoctorFromCloud(true);
+    startDoctorPolling();
+}
+
+async function logoutDoctor() {
+    // Automatically close the active session on the backend if the doctor forgot to click Stop Session
+    if (doctorSession && isApiConfigured()) {
+        const sessionToClose = doctorSession.sessionId;
+        apiPost({ action: 'stopSession', sessionId: sessionToClose }).catch(() => {});
+    }
+
+    stopDoctorPolling();
+    closeProjectorModal();
+    closeClearConfirmModal();
+
+    // Wipe all local session & table state so re-entering any subject is 100% clean
+    selectedDoctorCourse = null;
+    doctorSession = null;
+    attendanceRecords = [];
+
+    const qrEl = document.getElementById('qrcode');
+    if (qrEl) qrEl.innerHTML = '';
+    const tbody = document.getElementById('attendance-tbody');
+    if (tbody) tbody.innerHTML = '';
+
+    showSubjectGate();
+    showToast('تم تسجيل الخروج وإغلاق الجلسة بنجاح', 'info');
+}
+
+// ==========================================
+// 5. PROFESSOR LOGIC (QR GENERATION, STOP & TABLE)
 // ==========================================
 async function copyStudentPageLink() {
     const studentUrl = new URL('index.html', window.location.href).href;
@@ -306,26 +369,28 @@ function generatePIN() {
 }
 
 async function generateSessionQR() {
-    if (!isDoctorPage()) return;
+    if (!isDoctorPage() || !selectedDoctorCourse) return;
 
-    const course = document.getElementById('prof-course').value;
+    // If an earlier session was open in this dashboard, close it cleanly first
+    if (doctorSession && isApiConfigured()) {
+        apiPost({ action: 'stopSession', sessionId: doctorSession.sessionId }).catch(() => {});
+    }
+
     const section = document.getElementById('prof-section').value;
     const pin = generatePIN();
-    const sessionId = 'SES-' + Date.now();
+    const sessionId = 'SES-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
 
-    activeSession = {
+    doctorSession = {
         sessionId,
-        course,
+        course: selectedDoctorCourse,
         section: String(section),
         pin,
         createdAt: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })
     };
 
-    saveCachedState();
-    updateActiveSessionUI();
+    updateDoctorSessionUI(false);
     updateDashboardStats();
 
-    document.getElementById('filter-course').value = course;
     document.getElementById('filter-section').value = String(section);
     renderAttendanceTable();
 
@@ -335,9 +400,9 @@ async function generateSessionQR() {
     }
 
     try {
-        const res = await apiPost({ action: 'setSession', session: activeSession });
+        const res = await apiPost({ action: 'setSession', session: doctorSession });
         if (res.status === 'ok') {
-            showToast(`تم فتح جلسة ${course} - سيكشن ${section} ومزامنتها مع Google Sheets`, 'success');
+            showToast(`تم فتح جلسة ${selectedDoctorCourse} - سيكشن ${section}`, 'success');
         } else {
             showToast('فشل حفظ الجلسة في Google Sheets: ' + (res.message || ''), 'error');
         }
@@ -346,46 +411,76 @@ async function generateSessionQR() {
     }
 }
 
-function updateActiveSessionUI() {
-    const helperBanner = document.getElementById('active-session-helper');
-    const helperName = document.getElementById('helper-session-name');
+async function stopCurrentSession() {
+    if (!doctorSession) return;
 
-    if (helperBanner && helperName) {
-        if (activeSession) {
-            helperBanner.classList.remove('hidden');
-            helperName.textContent = `${activeSession.course} (سيكشن ${activeSession.section})`;
-        } else {
-            helperBanner.classList.add('hidden');
+    const stoppedSession = doctorSession;
+    doctorSession = null;
+    closeProjectorModal();
+
+    updateDoctorSessionUI(true);
+    updateDashboardStats();
+
+    if (isApiConfigured()) {
+        try {
+            const res = await apiPost({ action: 'stopSession', sessionId: stoppedSession.sessionId });
+            if (res.status === 'ok') {
+                showToast(`تم إيقاف جلسة سيكشن ${stoppedSession.section} ولن يُقبل أي تسجيل جديد`, 'info');
+            } else {
+                showToast('تم إيقاف الجلسة محلياً، تعذر التحديث في Google Sheets', 'error');
+            }
+        } catch (e) {
+            showToast('تعذر الاتصال بـ Google Sheets لإيقاف الجلسة', 'error');
         }
+    } else {
+        showToast('تم إيقاف الجلسة محلياً', 'info');
     }
+}
 
+function updateDoctorSessionUI(wasStopped = false) {
     const qrDisplayContainer = document.getElementById('qr-display-container');
     const qrEmptyState = document.getElementById('qr-empty-state');
     const statusBadge = document.getElementById('session-status-badge');
+    const stopBtn = document.getElementById('btn-stop-session');
+    const emptyTitle = document.getElementById('qr-empty-title');
+    const emptyDesc = document.getElementById('qr-empty-desc');
 
     if (!qrDisplayContainer || !qrEmptyState || !statusBadge) return;
 
-    if (!activeSession) {
+    if (!doctorSession) {
         qrDisplayContainer.classList.add('hidden');
         qrEmptyState.classList.remove('hidden');
-        statusBadge.textContent = 'جاهز للبدء';
-        statusBadge.className = 'text-xs bg-white/20 px-2.5 py-1 rounded-full font-semibold';
+        if (stopBtn) stopBtn.classList.add('hidden');
+
+        if (wasStopped) {
+            statusBadge.textContent = 'تم إيقاف الجلسة';
+            statusBadge.className = 'text-xs bg-rose-500 text-white px-2.5 py-1 rounded-full font-bold';
+            if (emptyTitle) emptyTitle.textContent = 'تم إغلاق الجلسة وانتهى وقت التسجيل';
+            if (emptyDesc) emptyDesc.textContent = 'يمكنك اختيار سيكشن آخر والضغط على زر التوليد لفتح جلسة جديدة.';
+        } else {
+            statusBadge.textContent = 'جاهز للبدء';
+            statusBadge.className = 'text-xs bg-white/20 px-2.5 py-1 rounded-full font-semibold';
+            if (emptyTitle) emptyTitle.textContent = 'لا توجد جلسة نشطة حالياً';
+            if (emptyDesc) emptyDesc.textContent = 'اختر رقم السيكشن ثم اضغط على زر التوليد لعرض الـ QR Code للطلاب.';
+        }
         return;
     }
 
     qrEmptyState.classList.add('hidden');
     qrDisplayContainer.classList.remove('hidden');
+    if (stopBtn) stopBtn.classList.remove('hidden');
+
     statusBadge.textContent = 'جلسة نشطة الآن';
     statusBadge.className = 'text-xs bg-emerald-500 text-white px-2.5 py-1 rounded-full font-bold';
 
-    document.getElementById('qr-badge-info').textContent = `${activeSession.course} • سيكشن ${activeSession.section}`;
-    document.getElementById('btn-pin-text').textContent = activeSession.pin;
+    document.getElementById('qr-badge-info').textContent = `${doctorSession.course} • سيكشن ${doctorSession.section}`;
+    document.getElementById('btn-pin-text').textContent = doctorSession.pin;
 
     const qrEl = document.getElementById('qrcode');
     qrEl.innerHTML = '';
     if (typeof QRCode !== 'undefined') {
         new QRCode(qrEl, {
-            text: buildQRPayload(activeSession),
+            text: buildQRPayload(doctorSession),
             width: 190,
             height: 190,
             colorDark: '#0f172a',
@@ -402,39 +497,35 @@ function updateDashboardStats() {
     if (!totalEl) return;
 
     totalEl.textContent = attendanceRecords.length;
+    document.getElementById('stat-active-course').textContent = selectedDoctorCourse
+        ? selectedDoctorCourse.split(' ')[0]
+        : '—';
 
-    if (activeSession) {
-        const sessionCount = attendanceRecords.filter(rec => {
-            if (rec.sessionId) {
-                return rec.sessionId === activeSession.sessionId;
-            }
-            return rec.course === activeSession.course && String(rec.section) === String(activeSession.section);
-        }).length;
+    if (doctorSession) {
+        const sessionCount = attendanceRecords.filter(
+            rec => rec.sessionId === doctorSession.sessionId
+        ).length;
 
         document.getElementById('stat-current-session').textContent = sessionCount;
-        document.getElementById('stat-current-label').textContent = `سيكشن ${activeSession.section}`;
-        document.getElementById('stat-active-course').textContent = activeSession.course.split(' ')[0];
-        document.getElementById('stat-active-section').textContent = `سيكشن رقم ${activeSession.section}`;
-        document.getElementById('stat-session-pin').textContent = activeSession.pin;
+        document.getElementById('stat-current-label').textContent = `سيكشن ${doctorSession.section}`;
+        document.getElementById('stat-active-section').textContent = `سيكشن رقم ${doctorSession.section}`;
+        document.getElementById('stat-session-pin').textContent = doctorSession.pin;
     } else {
         document.getElementById('stat-current-session').textContent = '0';
-        document.getElementById('stat-current-label').textContent = 'لم يتم بدء جلسة بعد';
-        document.getElementById('stat-active-course').textContent = '—';
-        document.getElementById('stat-active-section').textContent = 'اختر المادة والسيكشن';
+        document.getElementById('stat-current-label').textContent = 'لا توجد جلسة مفتوحة';
+        document.getElementById('stat-active-section').textContent = 'اختر رقم السيكشن';
         document.getElementById('stat-session-pin').textContent = '----';
     }
 }
 
 function matchesActiveFilters(rec) {
-    const filterCourseEl = document.getElementById('filter-course');
     const filterSectionEl = document.getElementById('filter-section');
     const filterSearchEl = document.getElementById('filter-search');
 
-    const filterCourse = filterCourseEl ? filterCourseEl.value : 'ALL';
     const filterSection = filterSectionEl ? filterSectionEl.value : 'ALL';
     const searchQuery = filterSearchEl ? filterSearchEl.value.trim().toLowerCase() : '';
 
-    const matchCourse = filterCourse === 'ALL' || rec.course === filterCourse;
+    const matchCourse = !selectedDoctorCourse || rec.course === selectedDoctorCourse;
     const matchSection = filterSection === 'ALL' || String(rec.section) === String(filterSection);
     const matchSearch = !searchQuery || rec.studentName.toLowerCase().includes(searchQuery);
     return matchCourse && matchSection && matchSearch;
@@ -488,16 +579,16 @@ function renderAttendanceTable() {
 }
 
 function openProjectorModal() {
-    if (!activeSession) return;
-    document.getElementById('modal-course-title').textContent = activeSession.course;
-    document.getElementById('modal-section-subtitle').textContent = `سيكشن رقم ${activeSession.section}`;
-    document.getElementById('modal-pin-code').textContent = activeSession.pin;
+    if (!doctorSession) return;
+    document.getElementById('modal-course-title').textContent = doctorSession.course;
+    document.getElementById('modal-section-subtitle').textContent = `سيكشن رقم ${doctorSession.section}`;
+    document.getElementById('modal-pin-code').textContent = doctorSession.pin;
 
     const modalQr = document.getElementById('modal-qrcode');
     modalQr.innerHTML = '';
     if (typeof QRCode !== 'undefined') {
         new QRCode(modalQr, {
-            text: buildQRPayload(activeSession),
+            text: buildQRPayload(doctorSession),
             width: 260,
             height: 260,
             colorDark: '#0f172a',
@@ -521,8 +612,8 @@ function handleBackdropClose(event, modalId) {
 }
 
 async function copySessionPIN() {
-    if (!activeSession) return;
-    await copyTextToClipboard(activeSession.pin, `تم نسخ رمز الجلسة (${activeSession.pin})`);
+    if (!doctorSession) return;
+    await copyTextToClipboard(doctorSession.pin, `تم نسخ رمز الجلسة (${doctorSession.pin})`);
 }
 
 async function copyTextToClipboard(text, successMessage) {
@@ -577,7 +668,8 @@ function exportToCSV() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `كشف_حضور_السكاشن_${new Date().toISOString().slice(0, 10)}.csv`;
+    const courseTag = getCourseCodeByName(selectedDoctorCourse || 'ALL');
+    link.download = `كشف_حضور_${courseTag}_${new Date().toISOString().slice(0, 10)}.csv`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -598,15 +690,16 @@ function closeClearConfirmModal() {
 
 async function confirmClearRecords() {
     closeClearConfirmModal();
+    if (!selectedDoctorCourse) return;
+
     attendanceRecords = [];
-    saveCachedState();
     renderAttendanceTable();
     updateDashboardStats();
 
     if (isApiConfigured()) {
         try {
-            await apiPost({ action: 'clearRecords' });
-            showToast('تم مسح جميع سجلات الحضور من Google Sheets', 'info');
+            await apiPost({ action: 'clearRecords', course: selectedDoctorCourse });
+            showToast(`تم مسح سجلات مادة ${selectedDoctorCourse} من Google Sheets`, 'info');
         } catch (e) {
             showToast('تم المسح محلياً، تعذر الاتصال بـ Google Sheets', 'error');
         }
@@ -616,8 +709,32 @@ async function confirmClearRecords() {
 }
 
 // ==========================================
-// 5. STUDENT LOGIC (SCANNER & CHECK-IN)
+// 6. STUDENT LOGIC (SCANNER & MULTI-SESSION CHECK-IN)
 // ==========================================
+function getMatchingOpenSessionForStudent() {
+    const courseEl = document.getElementById('student-course');
+    const sectionEl = document.getElementById('student-section');
+    if (!courseEl || !sectionEl) return null;
+
+    const course = courseEl.value;
+    const section = String(sectionEl.value);
+    return openSessionsList.find(s => s.course === course && String(s.section) === section) || null;
+}
+
+function updateStudentSessionHelper() {
+    const helperBanner = document.getElementById('active-session-helper');
+    const helperName = document.getElementById('helper-session-name');
+    if (!helperBanner || !helperName) return;
+
+    const matching = getMatchingOpenSessionForStudent();
+    if (matching) {
+        helperBanner.classList.remove('hidden');
+        helperName.textContent = `${matching.course} (سيكشن ${matching.section})`;
+    } else {
+        helperBanner.classList.add('hidden');
+    }
+}
+
 function validateStudentInputs() {
     const rawName = document.getElementById('student-name').value;
     const cleanName = rawName.replace(/\s+/g, ' ').trim();
@@ -773,36 +890,42 @@ async function submitWithPIN() {
         return;
     }
 
-    if (!activeSession && isApiConfigured()) {
-        await syncStudentSessionFromCloud();
+    // Refresh open sessions list if we don't yet have a local match
+    let matching = openSessionsList.find(
+        s => s.course === studentData.course &&
+             String(s.section) === String(studentData.section) &&
+             s.pin.toUpperCase() === enteredPin
+    );
+
+    if (!matching && isApiConfigured()) {
+        await syncStudentSessionsFromCloud();
+        matching = openSessionsList.find(
+            s => s.course === studentData.course &&
+                 String(s.section) === String(studentData.section) &&
+                 s.pin.toUpperCase() === enteredPin
+        );
     }
 
-    if (!activeSession) {
-        showToast('لا توجد جلسة نشطة حالياً! اطلب من الدكتور توليد الكود أولاً.', 'error');
-        return;
-    }
-
-    if (enteredPin !== activeSession.pin.toUpperCase()) {
-        showToast('رمز الجلسة (PIN) غير صحيح!', 'error');
-        return;
-    }
-
-    finalizeStudentCheckIn(activeSession);
+    // Submit directly with Course + Section + PIN (server validates against all OPEN sessions)
+    finalizeStudentCheckIn({
+        sessionId: matching ? matching.sessionId : '',
+        course: studentData.course,
+        section: String(studentData.section),
+        pin: enteredPin
+    });
 }
 
 function quickAutoScanActiveSession() {
-    if (!activeSession) {
-        showToast('لا توجد جلسة نشطة حالياً!', 'error');
+    const matching = getMatchingOpenSessionForStudent();
+    if (!matching) {
+        showToast('لا توجد جلسة نشطة لهذه المادة وهذا السيكشن حالياً!', 'error');
         return;
     }
-
-    document.getElementById('student-course').value = activeSession.course;
-    document.getElementById('student-section').value = String(activeSession.section);
 
     const studentData = validateStudentInputs();
     if (!studentData) return;
 
-    finalizeStudentCheckIn(activeSession);
+    finalizeStudentCheckIn(matching);
 }
 
 async function finalizeStudentCheckIn(sessionPayload) {
@@ -833,7 +956,7 @@ async function finalizeStudentCheckIn(sessionPayload) {
     try {
         const res = await apiPost({
             action: 'checkIn',
-            sessionId: sessionPayload.sessionId,
+            sessionId: sessionPayload.sessionId || '',
             pin: sessionPayload.pin,
             studentName: studentData.name,
             course: studentData.course,
@@ -871,7 +994,7 @@ function resetStudentForm() {
 }
 
 // ==========================================
-// 6. UTILITIES (TOASTS & SANITIZATION)
+// 7. UTILITIES (TOASTS & SANITIZATION)
 // ==========================================
 function getToastIconSVG(type) {
     if (type === 'success') {
