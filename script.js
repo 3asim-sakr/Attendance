@@ -29,7 +29,7 @@ let doctorPollTimer = null;
 // 2. PAGE DETECTION & INITIALIZATION
 // ==========================================
 function isDoctorPage() {
-    return Boolean(document.getElementById('doctor-subject-gate'));
+    return Boolean(document.getElementById('doctor-subject-gate-wrapper'));
 }
 
 function isStudentPage() {
@@ -108,7 +108,7 @@ function checkInAppBrowserWarning() {
     }
 }
 
-// Attach subject selection delegation immediately so clicks never miss
+// Attach subject selection delegation immediately so clicks never miss on any screen size
 document.addEventListener('click', (event) => {
     const subjectBtn = event.target.closest('.subject-select-btn[data-course]');
     if (!subjectBtn) return;
@@ -285,10 +285,10 @@ function stopDoctorPolling() {
 // 4. DOCTOR SUBJECT GATE & LOGOUT RESET
 // ==========================================
 function showSubjectGate() {
-    const gate = document.getElementById('doctor-subject-gate');
+    const gateWrapper = document.getElementById('doctor-subject-gate-wrapper');
     const dashboard = document.getElementById('doctor-dashboard-wrapper');
     if (dashboard) dashboard.classList.add('hidden');
-    if (gate) gate.classList.remove('hidden');
+    if (gateWrapper) gateWrapper.classList.remove('hidden');
 }
 
 function enterDoctorSubject(courseName) {
@@ -314,9 +314,9 @@ function enterDoctorSubject(courseName) {
     updateDashboardStats();
     renderAttendanceTable();
 
-    const gate = document.getElementById('doctor-subject-gate');
+    const gateWrapper = document.getElementById('doctor-subject-gate-wrapper');
     const dashboard = document.getElementById('doctor-dashboard-wrapper');
-    if (gate) gate.classList.add('hidden');
+    if (gateWrapper) gateWrapper.classList.add('hidden');
     if (dashboard) dashboard.classList.remove('hidden');
 
     syncDoctorFromCloud(true);
