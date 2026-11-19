@@ -25,84 +25,84 @@
     <div id="toast-container" class="fixed top-20 left-4 z-50 flex flex-col gap-2 max-w-sm w-full pointer-events-none"></div>
 
     <!-- ========================================================= -->
-    <!-- 1. SUBJECT SELECTION SCREEN (شاشة اختيار المادة أولاً)     -->
+    <!-- 1. SUBJECT SELECTION SCREEN (تظهر دائماً وتكيّف مع كل الشاشات) -->
     <!-- ========================================================= -->
-    <div id="doctor-subject-gate" class="flex-1 flex flex-col justify-center py-10 px-4 sm:px-6 lg:px-8">
-        <div class="max-w-3xl w-full mx-auto space-y-8">
-            <div class="text-center space-y-3">
-                <div class="w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-600 to-indigo-700 text-white flex items-center justify-center mx-auto shadow-lg">
-                    <svg class="w-8 h-8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h20"/><path d="M21 3v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V3"/><path d="m7 21 5-5 5 5"/></svg>
+    <div id="doctor-subject-gate-wrapper" class="flex-1 w-full py-6 sm:py-10 px-4 sm:px-6 lg:px-8">
+        <div id="doctor-subject-gate" class="max-w-4xl w-full mx-auto space-y-6 sm:space-y-8">
+            <div class="text-center space-y-2.5 sm:space-y-3">
+                <div class="w-14 h-14 sm:w-16 sm:h-16 rounded-2xl bg-gradient-to-br from-blue-600 to-indigo-700 text-white flex items-center justify-center mx-auto shadow-lg">
+                    <svg class="w-7 h-7 sm:w-8 sm:h-8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h20"/><path d="M21 3v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V3"/><path d="m7 21 5-5 5 5"/></svg>
                 </div>
                 <span class="inline-block px-3 py-1 rounded-full bg-blue-50 text-blue-700 border border-blue-100 text-xs font-extrabold">بوابة أعضاء هيئة التدريس والمعيدين</span>
-                <h1 class="text-2xl sm:text-3xl font-extrabold text-slate-900">اختر المادة الدراسية لبدء الجلسة</h1>
-                <p class="text-sm text-slate-500 max-w-md mx-auto">تعمل كل جلسة بشكل مستقل تماماً؛ يمكنك فتح وإغلاق جلسة السيكشن الخاص بك دون التأثير على أي دكتور آخر.</p>
+                <h1 class="text-xl sm:text-3xl font-extrabold text-slate-900">اختر المادة الدراسية لبدء الجلسة</h1>
+                <p class="text-xs sm:text-sm text-slate-500 max-w-lg mx-auto leading-relaxed">تعمل كل جلسة بشكل مستقل تماماً؛ يمكنك فتح وإغلاق جلسة السيكشن الخاص بك دون التأثير على أي دكتور آخر.</p>
             </div>
 
-            <!-- Subject Cards Grid -->
-            <div id="subject-cards-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                <button type="button" data-course="بايثون (Python)" class="subject-select-btn group bg-white hover:bg-blue-50/40 rounded-3xl border border-slate-200/90 hover:border-blue-400 p-6 text-right shadow-sm hover:shadow-md transition-all flex items-center justify-between gap-4 active:scale-[0.99] cursor-pointer">
-                    <div class="space-y-1.5">
+            <!-- Responsive Subject Cards Grid (Mobile: 1 col, Tablet/Small: 2 cols, Desktop: 3 cols) -->
+            <div id="subject-cards-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5 sm:gap-4">
+                <button type="button" data-course="بايثون (Python)" class="subject-select-btn group bg-white hover:bg-blue-50/40 rounded-2xl sm:rounded-3xl border border-slate-200/90 hover:border-blue-400 p-4 sm:p-6 text-right shadow-sm hover:shadow-md transition-all flex items-center justify-between gap-3 sm:gap-4 active:scale-[0.99] cursor-pointer w-full">
+                    <div class="space-y-1 min-w-0">
                         <span class="inline-block px-2.5 py-0.5 rounded-lg bg-indigo-50 text-indigo-700 font-mono text-xs font-extrabold">PY</span>
-                        <h2 class="text-base font-extrabold text-slate-900 group-hover:text-blue-700 transition-colors">بايثون (Python)</h2>
-                        <p class="text-xs text-slate-500">فتح لوحة حضور السكاشن</p>
+                        <h2 class="text-sm sm:text-base font-extrabold text-slate-900 group-hover:text-blue-700 transition-colors break-words">بايثون (Python)</h2>
+                        <p class="text-[11px] sm:text-xs text-slate-500">فتح لوحة حضور السكاشن</p>
                     </div>
-                    <div class="w-11 h-11 rounded-2xl bg-slate-100 group-hover:bg-blue-600 text-slate-600 group-hover:text-white flex items-center justify-center shrink-0 transition-colors">
-                        <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+                    <div class="w-10 h-10 sm:w-11 sm:h-11 rounded-xl sm:rounded-2xl bg-slate-100 group-hover:bg-blue-600 text-slate-600 group-hover:text-white flex items-center justify-center shrink-0 transition-colors">
+                        <svg class="w-4 h-4 sm:w-5 sm:h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
                     </div>
                 </button>
 
-                <button type="button" data-course="إنجليزي (English)" class="subject-select-btn group bg-white hover:bg-blue-50/40 rounded-3xl border border-slate-200/90 hover:border-blue-400 p-6 text-right shadow-sm hover:shadow-md transition-all flex items-center justify-between gap-4 active:scale-[0.99] cursor-pointer">
-                    <div class="space-y-1.5">
+                <button type="button" data-course="إنجليزي (English)" class="subject-select-btn group bg-white hover:bg-blue-50/40 rounded-2xl sm:rounded-3xl border border-slate-200/90 hover:border-blue-400 p-4 sm:p-6 text-right shadow-sm hover:shadow-md transition-all flex items-center justify-between gap-3 sm:gap-4 active:scale-[0.99] cursor-pointer w-full">
+                    <div class="space-y-1 min-w-0">
                         <span class="inline-block px-2.5 py-0.5 rounded-lg bg-indigo-50 text-indigo-700 font-mono text-xs font-extrabold">EN</span>
-                        <h2 class="text-base font-extrabold text-slate-900 group-hover:text-blue-700 transition-colors">إنجليزي (English)</h2>
-                        <p class="text-xs text-slate-500">فتح لوحة حضور السكاشن</p>
+                        <h2 class="text-sm sm:text-base font-extrabold text-slate-900 group-hover:text-blue-700 transition-colors break-words">إنجليزي (English)</h2>
+                        <p class="text-[11px] sm:text-xs text-slate-500">فتح لوحة حضور السكاشن</p>
                     </div>
-                    <div class="w-11 h-11 rounded-2xl bg-slate-100 group-hover:bg-blue-600 text-slate-600 group-hover:text-white flex items-center justify-center shrink-0 transition-colors">
-                        <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+                    <div class="w-10 h-10 sm:w-11 sm:h-11 rounded-xl sm:rounded-2xl bg-slate-100 group-hover:bg-blue-600 text-slate-600 group-hover:text-white flex items-center justify-center shrink-0 transition-colors">
+                        <svg class="w-4 h-4 sm:w-5 sm:h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
                     </div>
                 </button>
 
-                <button type="button" data-course="انفورميشن سيستم (Information Systems)" class="subject-select-btn group bg-white hover:bg-blue-50/40 rounded-3xl border border-slate-200/90 hover:border-blue-400 p-6 text-right shadow-sm hover:shadow-md transition-all flex items-center justify-between gap-4 active:scale-[0.99] cursor-pointer">
-                    <div class="space-y-1.5">
+                <button type="button" data-course="انفورميشن سيستم (Information Systems)" class="subject-select-btn group bg-white hover:bg-blue-50/40 rounded-2xl sm:rounded-3xl border border-slate-200/90 hover:border-blue-400 p-4 sm:p-6 text-right shadow-sm hover:shadow-md transition-all flex items-center justify-between gap-3 sm:gap-4 active:scale-[0.99] cursor-pointer w-full">
+                    <div class="space-y-1 min-w-0">
                         <span class="inline-block px-2.5 py-0.5 rounded-lg bg-indigo-50 text-indigo-700 font-mono text-xs font-extrabold">IS</span>
-                        <h2 class="text-base font-extrabold text-slate-900 group-hover:text-blue-700 transition-colors">انفورميشن سيستم (Information Systems)</h2>
-                        <p class="text-xs text-slate-500">فتح لوحة حضور السكاشن</p>
+                        <h2 class="text-sm sm:text-base font-extrabold text-slate-900 group-hover:text-blue-700 transition-colors break-words">انفورميشن سيستم (Information Systems)</h2>
+                        <p class="text-[11px] sm:text-xs text-slate-500">فتح لوحة حضور السكاشن</p>
                     </div>
-                    <div class="w-11 h-11 rounded-2xl bg-slate-100 group-hover:bg-blue-600 text-slate-600 group-hover:text-white flex items-center justify-center shrink-0 transition-colors">
-                        <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+                    <div class="w-10 h-10 sm:w-11 sm:h-11 rounded-xl sm:rounded-2xl bg-slate-100 group-hover:bg-blue-600 text-slate-600 group-hover:text-white flex items-center justify-center shrink-0 transition-colors">
+                        <svg class="w-4 h-4 sm:w-5 sm:h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
                     </div>
                 </button>
 
-                <button type="button" data-course="انفورميشن تكنولوجي (Information Technology)" class="subject-select-btn group bg-white hover:bg-blue-50/40 rounded-3xl border border-slate-200/90 hover:border-blue-400 p-6 text-right shadow-sm hover:shadow-md transition-all flex items-center justify-between gap-4 active:scale-[0.99] cursor-pointer">
-                    <div class="space-y-1.5">
+                <button type="button" data-course="انفورميشن تكنولوجي (Information Technology)" class="subject-select-btn group bg-white hover:bg-blue-50/40 rounded-2xl sm:rounded-3xl border border-slate-200/90 hover:border-blue-400 p-4 sm:p-6 text-right shadow-sm hover:shadow-md transition-all flex items-center justify-between gap-3 sm:gap-4 active:scale-[0.99] cursor-pointer w-full">
+                    <div class="space-y-1 min-w-0">
                         <span class="inline-block px-2.5 py-0.5 rounded-lg bg-indigo-50 text-indigo-700 font-mono text-xs font-extrabold">IT</span>
-                        <h2 class="text-base font-extrabold text-slate-900 group-hover:text-blue-700 transition-colors">انفورميشن تكنولوجي (Information Technology)</h2>
-                        <p class="text-xs text-slate-500">فتح لوحة حضور السكاشن</p>
+                        <h2 class="text-sm sm:text-base font-extrabold text-slate-900 group-hover:text-blue-700 transition-colors break-words">انفورميشن تكنولوجي (Information Technology)</h2>
+                        <p class="text-[11px] sm:text-xs text-slate-500">فتح لوحة حضور السكاشن</p>
                     </div>
-                    <div class="w-11 h-11 rounded-2xl bg-slate-100 group-hover:bg-blue-600 text-slate-600 group-hover:text-white flex items-center justify-center shrink-0 transition-colors">
-                        <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+                    <div class="w-10 h-10 sm:w-11 sm:h-11 rounded-xl sm:rounded-2xl bg-slate-100 group-hover:bg-blue-600 text-slate-600 group-hover:text-white flex items-center justify-center shrink-0 transition-colors">
+                        <svg class="w-4 h-4 sm:w-5 sm:h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
                     </div>
                 </button>
 
-                <button type="button" data-course="ستاتيستيكس (Statistics)" class="subject-select-btn group bg-white hover:bg-blue-50/40 rounded-3xl border border-slate-200/90 hover:border-blue-400 p-6 text-right shadow-sm hover:shadow-md transition-all flex items-center justify-between gap-4 active:scale-[0.99] cursor-pointer">
-                    <div class="space-y-1.5">
+                <button type="button" data-course="ستاتيستيكس (Statistics)" class="subject-select-btn group bg-white hover:bg-blue-50/40 rounded-2xl sm:rounded-3xl border border-slate-200/90 hover:border-blue-400 p-4 sm:p-6 text-right shadow-sm hover:shadow-md transition-all flex items-center justify-between gap-3 sm:gap-4 active:scale-[0.99] cursor-pointer w-full">
+                    <div class="space-y-1 min-w-0">
                         <span class="inline-block px-2.5 py-0.5 rounded-lg bg-indigo-50 text-indigo-700 font-mono text-xs font-extrabold">ST</span>
-                        <h2 class="text-base font-extrabold text-slate-900 group-hover:text-blue-700 transition-colors">ستاتيستيكس (Statistics)</h2>
-                        <p class="text-xs text-slate-500">فتح لوحة حضور السكاشن</p>
+                        <h2 class="text-sm sm:text-base font-extrabold text-slate-900 group-hover:text-blue-700 transition-colors break-words">ستاتيستيكس (Statistics)</h2>
+                        <p class="text-[11px] sm:text-xs text-slate-500">فتح لوحة حضور السكاشن</p>
                     </div>
-                    <div class="w-11 h-11 rounded-2xl bg-slate-100 group-hover:bg-blue-600 text-slate-600 group-hover:text-white flex items-center justify-center shrink-0 transition-colors">
-                        <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+                    <div class="w-10 h-10 sm:w-11 sm:h-11 rounded-xl sm:rounded-2xl bg-slate-100 group-hover:bg-blue-600 text-slate-600 group-hover:text-white flex items-center justify-center shrink-0 transition-colors">
+                        <svg class="w-4 h-4 sm:w-5 sm:h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
                     </div>
                 </button>
 
-                <button type="button" data-course="ماث (Mathematics)" class="subject-select-btn group bg-white hover:bg-blue-50/40 rounded-3xl border border-slate-200/90 hover:border-blue-400 p-6 text-right shadow-sm hover:shadow-md transition-all flex items-center justify-between gap-4 active:scale-[0.99] cursor-pointer">
-                    <div class="space-y-1.5">
+                <button type="button" data-course="ماث (Mathematics)" class="subject-select-btn group bg-white hover:bg-blue-50/40 rounded-2xl sm:rounded-3xl border border-slate-200/90 hover:border-blue-400 p-4 sm:p-6 text-right shadow-sm hover:shadow-md transition-all flex items-center justify-between gap-3 sm:gap-4 active:scale-[0.99] cursor-pointer w-full">
+                    <div class="space-y-1 min-w-0">
                         <span class="inline-block px-2.5 py-0.5 rounded-lg bg-indigo-50 text-indigo-700 font-mono text-xs font-extrabold">MA</span>
-                        <h2 class="text-base font-extrabold text-slate-900 group-hover:text-blue-700 transition-colors">ماث (Mathematics)</h2>
-                        <p class="text-xs text-slate-500">فتح لوحة حضور السكاشن</p>
+                        <h2 class="text-sm sm:text-base font-extrabold text-slate-900 group-hover:text-blue-700 transition-colors break-words">ماث (Mathematics)</h2>
+                        <p class="text-[11px] sm:text-xs text-slate-500">فتح لوحة حضور السكاشن</p>
                     </div>
-                    <div class="w-11 h-11 rounded-2xl bg-slate-100 group-hover:bg-blue-600 text-slate-600 group-hover:text-white flex items-center justify-center shrink-0 transition-colors">
-                        <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+                    <div class="w-10 h-10 sm:w-11 sm:h-11 rounded-xl sm:rounded-2xl bg-slate-100 group-hover:bg-blue-600 text-slate-600 group-hover:text-white flex items-center justify-center shrink-0 transition-colors">
+                        <svg class="w-4 h-4 sm:w-5 sm:h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
                     </div>
                 </button>
             </div>
