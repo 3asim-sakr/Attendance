@@ -1,0 +1,920 @@
+// ==========================================
+// 1. CONSTANTS & STATE MANAGEMENT
+// ==========================================
+const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwrYo_w4c282Nei3l5cSi4f5_FfFHBLC87tmzCyxlrECHoW3CYEMeU6b0aWcsGC8kT6/exec';
+
+const COURSES = [
+    { id: 'python', name: 'بايثون (Python)', code: 'PY' },
+    { id: 'english', name: 'إنجليزي (English)', code: 'EN' },
+    { id: 'is', name: 'انفورميشن سيستم (Information Systems)', code: 'IS' },
+    { id: 'it', name: 'انفورميشن تكنولوجي (Information Technology)', code: 'IT' },
+    { id: 'statistics', name: 'ستاتيستيكس (Statistics)', code: 'ST' },
+    { id: 'math', name: 'ماث (Mathematics)', code: 'MA' }
+];
+
+const SECTIONS = Array.from({ length: 12 }, (_, i) => i + 1);
+
+const STORAGE_KEYS = {
+    ATTENDANCE: 'uni_attendance_records_v1',
+    ACTIVE_SESSION: 'uni_active_qr_session_v1'
+};
+
+let attendanceRecords = [];
+let activeSession = null;
+let html5QrcodeScanner = null;
+let isScannerStarting = false;
+let isScannerRunning = false;
+let pendingScannerStop = false;
+let isSubmitting = false;
+let doctorPollTimer = null;
+
+// ==========================================
+// 2. PAGE DETECTION & INITIALIZATION
+// ==========================================
+function isDoctorPage() {
+    return Boolean(document.getElementById('doctor-view'));
+}
+
+function isStudentPage() {
+    return Boolean(document.getElementById('student-view'));
+}
+
+function isApiConfigured() {
+    return GOOGLE_SCRIPT_URL && !GOOGLE_SCRIPT_URL.includes('YOUR_GOOGLE_APPS_SCRIPT');
+}
+
+function getCourseCodeByName(courseName) {
+    const found = COURSES.find(c => c.name === courseName);
+    return found ? found.code : courseName;
+}
+
+function getCourseNameByCode(courseCode) {
+    const found = COURSES.find(c => c.code === courseCode || c.name === courseCode);
+    return found ? found.name : null;
+}
+
+function buildQRPayload(session) {
+    const courseCode = getCourseCodeByName(session.course);
+    return `UNI1|${session.sessionId}|${courseCode}|${session.section}|${session.pin}`;
+}
+
+function parseQRPayload(rawText) {
+    const text = String(rawText || '').trim();
+
+    if (text.startsWith('UNI1|')) {
+        const parts = text.split('|');
+        if (parts.length !== 5) return null;
+
+        const [, sessionId, courseCode, section, pin] = parts;
+        const courseName = getCourseNameByCode(courseCode);
+        if (!sessionId || !courseName || !section || !pin) return null;
+
+        return {
+            app: 'UNI_ATTENDANCE',
+            sessionId,
+            course: courseName,
+            section: String(section),
+            pin
+        };
+    }
+
+    const payload = JSON.parse(text);
+    if (
+        !payload ||
+        typeof payload !== 'object' ||
+        payload.app !== 'UNI_ATTENDANCE' ||
+        !payload.sessionId ||
+        !payload.course ||
+        !payload.section ||
+        !payload.pin
+    ) {
+        return null;
+    }
+
+    return {
+        app: 'UNI_ATTENDANCE',
+        sessionId: payload.sessionId,
+        course: payload.course,
+        section: String(payload.section),
+        pin: payload.pin
+    };
+}
+
+function checkInAppBrowserWarning() {
+    const banner = document.getElementById('inapp-browser-warning');
+    if (!banner) return;
+
+    const ua = navigator.userAgent || '';
+    const isInApp = /FBAN|FBAV|Instagram|WhatsApp|Telegram|Line\/|Snapchat|Twitter|; wv\)/i.test(ua);
+    if (isInApp) {
+        banner.classList.remove('hidden');
+    }
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+    populateDropdowns();
+    loadCachedState();
+    bindLifecycleAndShortcuts();
+
+    if (!isApiConfigured()) {
+        showToast('تنبيه: لم يتم إضافة رابط Google Apps Script في ملف script.js بعد!', 'error');
+    }
+
+    if (isDoctorPage()) {
+        renderAttendanceTable();
+        updateDashboardStats();
+        updateActiveSessionUI();
+        syncDoctorFromCloud(true);
+        startDoctorPolling();
+    } else if (isStudentPage()) {
+        checkInAppBrowserWarning();
+        updateActiveSessionUI();
+        syncStudentSessionFromCloud();
+    }
+});
+
+function populateDropdowns() {
+    const courseSelects = [
+        document.getElementById('prof-course'),
+        document.getElementById('student-course'),
+        document.getElementById('filter-course')
+    ].filter(Boolean);
+
+    COURSES.forEach(course => {
+        courseSelects.forEach(selectEl => {
+            selectEl.add(new Option(course.name, course.name));
+        });
+    });
+
+    const sectionSelects = [
+        document.getElementById('prof-section'),
+        document.getElementById('student-section'),
+        document.getElementById('filter-section')
+    ].filter(Boolean);
+
+    SECTIONS.forEach(num => {
+        const label = `سيكشن ${num}`;
+        sectionSelects.forEach(selectEl => {
+            selectEl.add(new Option(label, String(num)));
+        });
+    });
+}
+
+function bindLifecycleAndShortcuts() {
+    const pinInput = document.getElementById('student-pin-input');
+    if (pinInput) {
+        pinInput.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                submitWithPIN();
+            }
+        });
+    }
+
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+            closeProjectorModal();
+            closeClearConfirmModal();
+        }
+    });
+
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+            stopCameraScanner();
+        } else if (isDoctorPage()) {
+            syncDoctorFromCloud(false);
+        } else if (isStudentPage()) {
+            syncStudentSessionFromCloud();
+        }
+    });
+
+    window.addEventListener('pagehide', stopCameraScanner);
+}
+
+// ==========================================
+// 3. CLOUD SYNC (GOOGLE SHEETS API)
+// ==========================================
+function loadCachedState() {
+    try {
+        const savedRecords = localStorage.getItem(STORAGE_KEYS.ATTENDANCE);
+        attendanceRecords = savedRecords ? JSON.parse(savedRecords) : [];
+        if (!Array.isArray(attendanceRecords)) attendanceRecords = [];
+
+        const savedSession = localStorage.getItem(STORAGE_KEYS.ACTIVE_SESSION);
+        activeSession = savedSession ? JSON.parse(savedSession) : null;
+    } catch (e) {
+        attendanceRecords = [];
+        activeSession = null;
+    }
+}
+
+function saveCachedState() {
+    try {
+        localStorage.setItem(STORAGE_KEYS.ATTENDANCE, JSON.stringify(attendanceRecords));
+        localStorage.setItem(STORAGE_KEYS.ACTIVE_SESSION, JSON.stringify(activeSession));
+    } catch (e) {
+        // Ignore storage quota errors in Private mode
+    }
+}
+
+async function apiGet(action) {
+    const url = `${GOOGLE_SCRIPT_URL}?action=${encodeURIComponent(action)}&t=${Date.now()}`;
+    const response = await fetch(url, { method: 'GET', cache: 'no-store' });
+    if (!response.ok) throw new Error('Network response failed');
+    return response.json();
+}
+
+async function apiPost(bodyObj) {
+    // Use text/plain to prevent CORS preflight OPTIONS requests on Google Apps Script
+    const response = await fetch(GOOGLE_SCRIPT_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(bodyObj)
+    });
+    if (!response.ok) throw new Error('Network response failed');
+    return response.json();
+}
+
+async function syncStudentSessionFromCloud() {
+    if (!isApiConfigured()) return;
+    try {
+        const res = await apiGet('getSession');
+        if (res.status === 'ok') {
+            activeSession = res.activeSession || null;
+            saveCachedState();
+            updateActiveSessionUI();
+        }
+    } catch (e) {
+        // Silent fail; student can still scan QR directly
+    }
+}
+
+async function syncDoctorFromCloud(isInitial = false) {
+    if (!isApiConfigured()) return;
+    try {
+        const prevIds = new Set(attendanceRecords.map(r => r.id));
+        const res = await apiGet('getAll');
+        if (res.status === 'ok') {
+            if (res.activeSession && (!activeSession || activeSession.sessionId !== res.activeSession.sessionId)) {
+                activeSession = res.activeSession;
+                updateActiveSessionUI();
+            }
+
+            if (Array.isArray(res.records)) {
+                const newEntries = res.records.filter(r => !prevIds.has(r.id));
+                attendanceRecords = res.records;
+                saveCachedState();
+                renderAttendanceTable();
+                updateDashboardStats();
+
+                if (!isInitial && newEntries.length > 0) {
+                    const latestName = newEntries[0].studentName;
+                    const extra = newEntries.length > 1 ? ` (+${newEntries.length - 1} آخرين)` : '';
+                    showToast(`تم تسجيل حضور: ${latestName}${extra}`, 'success');
+                }
+            }
+        }
+    } catch (e) {
+        console.error('Cloud sync error:', e);
+    }
+}
+
+function startDoctorPolling() {
+    if (doctorPollTimer) clearInterval(doctorPollTimer);
+    doctorPollTimer = setInterval(() => {
+        if (!document.hidden) {
+            syncDoctorFromCloud(false);
+        }
+    }, 5000);
+}
+
+// ==========================================
+// 4. PROFESSOR LOGIC (QR GENERATION & TABLE)
+// ==========================================
+async function copyStudentPageLink() {
+    const studentUrl = new URL('index.html', window.location.href).href;
+    await copyTextToClipboard(studentUrl, 'تم نسخ رابط صفحة تسجيل حضور الطلاب');
+}
+
+function generatePIN() {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let pin = '';
+    for (let i = 0; i < 5; i++) {
+        pin += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return pin;
+}
+
+async function generateSessionQR() {
+    if (!isDoctorPage()) return;
+
+    const course = document.getElementById('prof-course').value;
+    const section = document.getElementById('prof-section').value;
+    const pin = generatePIN();
+    const sessionId = 'SES-' + Date.now();
+
+    activeSession = {
+        sessionId,
+        course,
+        section: String(section),
+        pin,
+        createdAt: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })
+    };
+
+    saveCachedState();
+    updateActiveSessionUI();
+    updateDashboardStats();
+
+    document.getElementById('filter-course').value = course;
+    document.getElementById('filter-section').value = String(section);
+    renderAttendanceTable();
+
+    if (!isApiConfigured()) {
+        showToast('تم توليد الكود محلياً، لكن رابط Google Sheets غير مضاف!', 'error');
+        return;
+    }
+
+    try {
+        const res = await apiPost({ action: 'setSession', session: activeSession });
+        if (res.status === 'ok') {
+            showToast(`تم فتح جلسة ${course} - سيكشن ${section} ومزامنتها مع Google Sheets`, 'success');
+        } else {
+            showToast('فشل حفظ الجلسة في Google Sheets: ' + (res.message || ''), 'error');
+        }
+    } catch (e) {
+        showToast('تعذر الاتصال بـ Google Sheets. تحقق من الإنترنت وصلاحيات النشر.', 'error');
+    }
+}
+
+function updateActiveSessionUI() {
+    const helperBanner = document.getElementById('active-session-helper');
+    const helperName = document.getElementById('helper-session-name');
+
+    if (helperBanner && helperName) {
+        if (activeSession) {
+            helperBanner.classList.remove('hidden');
+            helperName.textContent = `${activeSession.course} (سيكشن ${activeSession.section})`;
+        } else {
+            helperBanner.classList.add('hidden');
+        }
+    }
+
+    const qrDisplayContainer = document.getElementById('qr-display-container');
+    const qrEmptyState = document.getElementById('qr-empty-state');
+    const statusBadge = document.getElementById('session-status-badge');
+
+    if (!qrDisplayContainer || !qrEmptyState || !statusBadge) return;
+
+    if (!activeSession) {
+        qrDisplayContainer.classList.add('hidden');
+        qrEmptyState.classList.remove('hidden');
+        statusBadge.textContent = 'جاهز للبدء';
+        statusBadge.className = 'text-xs bg-white/20 px-2.5 py-1 rounded-full font-semibold';
+        return;
+    }
+
+    qrEmptyState.classList.add('hidden');
+    qrDisplayContainer.classList.remove('hidden');
+    statusBadge.textContent = 'جلسة نشطة الآن';
+    statusBadge.className = 'text-xs bg-emerald-500 text-white px-2.5 py-1 rounded-full font-bold';
+
+    document.getElementById('qr-badge-info').textContent = `${activeSession.course} • سيكشن ${activeSession.section}`;
+    document.getElementById('btn-pin-text').textContent = activeSession.pin;
+
+    const qrEl = document.getElementById('qrcode');
+    qrEl.innerHTML = '';
+    if (typeof QRCode !== 'undefined') {
+        new QRCode(qrEl, {
+            text: buildQRPayload(activeSession),
+            width: 190,
+            height: 190,
+            colorDark: '#0f172a',
+            colorLight: '#ffffff',
+            correctLevel: QRCode.CorrectLevel.M
+        });
+    } else {
+        qrEl.innerHTML = '<p class="text-xs text-rose-600 font-bold">تعذر تحميل مكتبة QR Code. استخدم رمز الجلسة (PIN).</p>';
+    }
+}
+
+function updateDashboardStats() {
+    const totalEl = document.getElementById('stat-total-records');
+    if (!totalEl) return;
+
+    totalEl.textContent = attendanceRecords.length;
+
+    if (activeSession) {
+        const sessionCount = attendanceRecords.filter(rec => {
+            if (rec.sessionId) {
+                return rec.sessionId === activeSession.sessionId;
+            }
+            return rec.course === activeSession.course && String(rec.section) === String(activeSession.section);
+        }).length;
+
+        document.getElementById('stat-current-session').textContent = sessionCount;
+        document.getElementById('stat-current-label').textContent = `سيكشن ${activeSession.section}`;
+        document.getElementById('stat-active-course').textContent = activeSession.course.split(' ')[0];
+        document.getElementById('stat-active-section').textContent = `سيكشن رقم ${activeSession.section}`;
+        document.getElementById('stat-session-pin').textContent = activeSession.pin;
+    } else {
+        document.getElementById('stat-current-session').textContent = '0';
+        document.getElementById('stat-current-label').textContent = 'لم يتم بدء جلسة بعد';
+        document.getElementById('stat-active-course').textContent = '—';
+        document.getElementById('stat-active-section').textContent = 'اختر المادة والسيكشن';
+        document.getElementById('stat-session-pin').textContent = '----';
+    }
+}
+
+function matchesActiveFilters(rec) {
+    const filterCourseEl = document.getElementById('filter-course');
+    const filterSectionEl = document.getElementById('filter-section');
+    const filterSearchEl = document.getElementById('filter-search');
+
+    const filterCourse = filterCourseEl ? filterCourseEl.value : 'ALL';
+    const filterSection = filterSectionEl ? filterSectionEl.value : 'ALL';
+    const searchQuery = filterSearchEl ? filterSearchEl.value.trim().toLowerCase() : '';
+
+    const matchCourse = filterCourse === 'ALL' || rec.course === filterCourse;
+    const matchSection = filterSection === 'ALL' || String(rec.section) === String(filterSection);
+    const matchSearch = !searchQuery || rec.studentName.toLowerCase().includes(searchQuery);
+    return matchCourse && matchSection && matchSearch;
+}
+
+function getFilteredRecords() {
+    return attendanceRecords.filter(matchesActiveFilters);
+}
+
+function createAttendanceRowElement(rec, rowNumber) {
+    const tr = document.createElement('tr');
+    tr.className = 'hover:bg-blue-50/40 transition-colors';
+    tr.innerHTML = `
+        <td class="row-index py-3.5 px-4 font-bold text-slate-400 text-xs">${rowNumber}</td>
+        <td class="py-3.5 px-4 font-bold text-slate-900">${escapeHTML(rec.studentName)}</td>
+        <td class="py-3.5 px-4">
+            <span class="px-2.5 py-1 rounded-lg bg-indigo-50 text-indigo-700 text-xs font-bold">${escapeHTML(rec.course)}</span>
+        </td>
+        <td class="py-3.5 px-4 font-bold text-slate-700 text-xs">سيكشن ${escapeHTML(rec.section)}</td>
+        <td class="py-3.5 px-4 text-xs text-slate-500 font-semibold">${escapeHTML(rec.timestamp)}</td>
+        <td class="py-3.5 px-4 text-center">
+            <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-700 text-xs font-extrabold">
+                <span class="w-1.5 h-1.5 rounded-full bg-emerald-600"></span>
+                حاضر
+            </span>
+        </td>
+    `;
+    return tr;
+}
+
+function renderAttendanceTable() {
+    const tbody = document.getElementById('attendance-tbody');
+    const emptyState = document.getElementById('table-empty-state');
+    if (!tbody || !emptyState) return;
+
+    const filtered = getFilteredRecords();
+    tbody.innerHTML = '';
+
+    if (filtered.length === 0) {
+        emptyState.classList.remove('hidden');
+        return;
+    }
+
+    emptyState.classList.add('hidden');
+
+    const fragment = document.createDocumentFragment();
+    filtered.forEach((rec, idx) => {
+        fragment.appendChild(createAttendanceRowElement(rec, filtered.length - idx));
+    });
+    tbody.appendChild(fragment);
+}
+
+function openProjectorModal() {
+    if (!activeSession) return;
+    document.getElementById('modal-course-title').textContent = activeSession.course;
+    document.getElementById('modal-section-subtitle').textContent = `سيكشن رقم ${activeSession.section}`;
+    document.getElementById('modal-pin-code').textContent = activeSession.pin;
+
+    const modalQr = document.getElementById('modal-qrcode');
+    modalQr.innerHTML = '';
+    if (typeof QRCode !== 'undefined') {
+        new QRCode(modalQr, {
+            text: buildQRPayload(activeSession),
+            width: 260,
+            height: 260,
+            colorDark: '#0f172a',
+            colorLight: '#ffffff',
+            correctLevel: QRCode.CorrectLevel.M
+        });
+    }
+
+    document.getElementById('projector-modal').classList.remove('hidden');
+}
+
+function closeProjectorModal() {
+    const modal = document.getElementById('projector-modal');
+    if (modal) modal.classList.add('hidden');
+}
+
+function handleBackdropClose(event, modalId) {
+    if (event.target.id === modalId) {
+        document.getElementById(modalId).classList.add('hidden');
+    }
+}
+
+async function copySessionPIN() {
+    if (!activeSession) return;
+    await copyTextToClipboard(activeSession.pin, `تم نسخ رمز الجلسة (${activeSession.pin})`);
+}
+
+async function copyTextToClipboard(text, successMessage) {
+    try {
+        if (navigator.clipboard && window.isSecureContext) {
+            await navigator.clipboard.writeText(text);
+        } else {
+            const tempInput = document.createElement('textarea');
+            tempInput.value = text;
+            tempInput.style.position = 'fixed';
+            tempInput.style.opacity = '0';
+            document.body.appendChild(tempInput);
+            tempInput.focus();
+            tempInput.select();
+            document.execCommand('copy');
+            document.body.removeChild(tempInput);
+        }
+        showToast(successMessage, 'success');
+    } catch (err) {
+        showToast('تعذر النسخ تلقائياً: ' + text, 'info');
+    }
+}
+
+function formatCSVCell(value) {
+    let str = String(value ?? '').replace(/"/g, '""');
+    if (/^[=+\-@\t\r]/.test(str)) {
+        str = "'" + str;
+    }
+    return `"${str}"`;
+}
+
+function exportToCSV() {
+    const recordsToExport = getFilteredRecords();
+
+    if (recordsToExport.length === 0) {
+        showToast('لا توجد سجلات مطابقة لتصديرها حالياً', 'error');
+        return;
+    }
+
+    const headers = ['م', 'اسم الطالب', 'المادة الدراسية', 'السيكشن', 'وقت التسجيل', 'الحالة'];
+    const rows = recordsToExport.map((r, i) => [
+        i + 1,
+        formatCSVCell(r.studentName),
+        formatCSVCell(r.course),
+        formatCSVCell(`سيكشن ${r.section}`),
+        formatCSVCell(r.timestamp),
+        formatCSVCell('حاضر')
+    ]);
+
+    const csvContent = '\uFEFF' + [headers.join(','), ...rows.map(e => e.join(','))].join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `كشف_حضور_السكاشن_${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+
+    showToast(`تم تحميل ملف كشف الحضور (${recordsToExport.length} سجل)`, 'success');
+}
+
+function openClearConfirmModal() {
+    const modal = document.getElementById('clear-modal');
+    if (modal) modal.classList.remove('hidden');
+}
+
+function closeClearConfirmModal() {
+    const modal = document.getElementById('clear-modal');
+    if (modal) modal.classList.add('hidden');
+}
+
+async function confirmClearRecords() {
+    closeClearConfirmModal();
+    attendanceRecords = [];
+    saveCachedState();
+    renderAttendanceTable();
+    updateDashboardStats();
+
+    if (isApiConfigured()) {
+        try {
+            await apiPost({ action: 'clearRecords' });
+            showToast('تم مسح جميع سجلات الحضور من Google Sheets', 'info');
+        } catch (e) {
+            showToast('تم المسح محلياً، تعذر الاتصال بـ Google Sheets', 'error');
+        }
+    } else {
+        showToast('تم مسح السجلات محلياً', 'info');
+    }
+}
+
+// ==========================================
+// 5. STUDENT LOGIC (SCANNER & CHECK-IN)
+// ==========================================
+function validateStudentInputs() {
+    const rawName = document.getElementById('student-name').value;
+    const cleanName = rawName.replace(/\s+/g, ' ').trim();
+    const course = document.getElementById('student-course').value;
+    const section = document.getElementById('student-section').value;
+
+    const words = cleanName.split(' ').filter(Boolean);
+    const hasLetters = /[\u0600-\u06FFa-zA-Z]/.test(cleanName);
+
+    if (!hasLetters || cleanName.length < 5 || words.length < 2) {
+        showToast('يرجى إدخال اسم الطالب ثلاثي بشكل صحيح', 'error');
+        return null;
+    }
+
+    return { name: cleanName, course, section };
+}
+
+function startCameraScanner() {
+    const studentData = validateStudentInputs();
+    if (!studentData) return;
+
+    if (!window.isSecureContext) {
+        showToast('تشغيل الكاميرا يتطلب رابط HTTPS آمن. استخدم رمز الجلسة (PIN) بالأسفل.', 'error');
+        return;
+    }
+
+    if (typeof Html5Qrcode === 'undefined') {
+        showToast('مكتبة الكاميرا غير متوفرة حالياً. استخدم رمز الجلسة (PIN) بالأسفل.', 'error');
+        return;
+    }
+
+    if (isScannerStarting || isScannerRunning || isSubmitting) return;
+
+    const wrapper = document.getElementById('scanner-wrapper');
+    const btnStart = document.getElementById('btn-start-scan');
+    wrapper.classList.remove('hidden');
+    btnStart.classList.add('hidden');
+
+    isScannerStarting = true;
+    pendingScannerStop = false;
+
+    const scannerConfig = {
+        verbose: false,
+        useBarCodeDetectorIfSupported: true
+    };
+    if (typeof Html5QrcodeSupportedFormats !== 'undefined') {
+        scannerConfig.formatsToSupport = [Html5QrcodeSupportedFormats.QR_CODE];
+    }
+
+    html5QrcodeScanner = new Html5Qrcode('reader', scannerConfig);
+
+    const scanOptions = {
+        fps: 8,
+        qrbox: { width: 220, height: 220 },
+        videoConstraints: {
+            facingMode: 'environment',
+            width: { ideal: 640 },
+            height: { ideal: 480 }
+        }
+    };
+
+    const onScanSuccess = (decodedText) => {
+        stopCameraScanner();
+        processScannedQR(decodedText);
+    };
+
+    const onStartSuccess = () => {
+        isScannerStarting = false;
+        isScannerRunning = true;
+
+        if (pendingScannerStop) {
+            pendingScannerStop = false;
+            stopCameraScanner();
+        }
+    };
+
+    const onStartFailure = () => {
+        isScannerStarting = false;
+        isScannerRunning = false;
+        pendingScannerStop = false;
+        html5QrcodeScanner = null;
+        wrapper.classList.add('hidden');
+        btnStart.classList.remove('hidden');
+        showToast('تعذر فتح الكاميرا. يمكنك استخدام رمز الجلسة (PIN) بالأسفل.', 'error');
+    };
+
+    html5QrcodeScanner
+        .start({ facingMode: 'environment' }, scanOptions, onScanSuccess, () => {})
+        .then(onStartSuccess)
+        .catch(() => {
+            if (!html5QrcodeScanner || pendingScannerStop) {
+                onStartFailure();
+                return;
+            }
+            const fallbackOptions = {
+                fps: 8,
+                qrbox: { width: 220, height: 220 },
+                videoConstraints: {
+                    facingMode: 'user',
+                    width: { ideal: 640 },
+                    height: { ideal: 480 }
+                }
+            };
+            html5QrcodeScanner
+                .start({ facingMode: 'user' }, fallbackOptions, onScanSuccess, () => {})
+                .then(onStartSuccess)
+                .catch(onStartFailure);
+        });
+}
+
+function stopCameraScanner() {
+    const wrapper = document.getElementById('scanner-wrapper');
+    const btnStart = document.getElementById('btn-start-scan');
+    if (wrapper) wrapper.classList.add('hidden');
+    if (btnStart) btnStart.classList.remove('hidden');
+
+    if (isScannerStarting) {
+        pendingScannerStop = true;
+        return;
+    }
+
+    if (html5QrcodeScanner && isScannerRunning) {
+        const scannerInstance = html5QrcodeScanner;
+        html5QrcodeScanner = null;
+        isScannerRunning = false;
+
+        scannerInstance.stop().then(() => {
+            scannerInstance.clear();
+        }).catch(() => {});
+    }
+}
+
+function processScannedQR(rawText) {
+    try {
+        const payload = parseQRPayload(rawText);
+        if (!payload) {
+            showToast('كود QR غير صالح لهذا النظام!', 'error');
+            return;
+        }
+        finalizeStudentCheckIn(payload);
+    } catch (e) {
+        showToast('كود QR غير مقروء أو غير تابع للجامعة', 'error');
+    }
+}
+
+async function submitWithPIN() {
+    const studentData = validateStudentInputs();
+    if (!studentData) return;
+
+    const enteredPin = document.getElementById('student-pin-input').value.trim().toUpperCase();
+    if (!enteredPin) {
+        showToast('يرجى إدخال رمز الجلسة (PIN) المعروض عند الدكتور', 'error');
+        return;
+    }
+
+    if (!activeSession && isApiConfigured()) {
+        await syncStudentSessionFromCloud();
+    }
+
+    if (!activeSession) {
+        showToast('لا توجد جلسة نشطة حالياً! اطلب من الدكتور توليد الكود أولاً.', 'error');
+        return;
+    }
+
+    if (enteredPin !== activeSession.pin.toUpperCase()) {
+        showToast('رمز الجلسة (PIN) غير صحيح!', 'error');
+        return;
+    }
+
+    finalizeStudentCheckIn(activeSession);
+}
+
+function quickAutoScanActiveSession() {
+    if (!activeSession) {
+        showToast('لا توجد جلسة نشطة حالياً!', 'error');
+        return;
+    }
+
+    document.getElementById('student-course').value = activeSession.course;
+    document.getElementById('student-section').value = String(activeSession.section);
+
+    const studentData = validateStudentInputs();
+    if (!studentData) return;
+
+    finalizeStudentCheckIn(activeSession);
+}
+
+async function finalizeStudentCheckIn(sessionPayload) {
+    if (isSubmitting) return;
+
+    const studentData = validateStudentInputs();
+    if (!studentData) return;
+
+    if (
+        studentData.course !== sessionPayload.course ||
+        String(studentData.section) !== String(sessionPayload.section)
+    ) {
+        showToast(
+            `خطأ: الكود الخاص بالدكتور هو لمادة (${sessionPayload.course} - سيكشن ${sessionPayload.section}) وليس لاختيارك!`,
+            'error'
+        );
+        return;
+    }
+
+    if (!isApiConfigured()) {
+        showToast('خطأ في الإعداد: رابط Google Sheets غير مضاف في script.js', 'error');
+        return;
+    }
+
+    isSubmitting = true;
+    showToast('جاري تسجيل حضورك في كشف الدكتور...', 'info');
+
+    try {
+        const res = await apiPost({
+            action: 'checkIn',
+            sessionId: sessionPayload.sessionId,
+            pin: sessionPayload.pin,
+            studentName: studentData.name,
+            course: studentData.course,
+            section: String(studentData.section)
+        });
+
+        if (res.status !== 'ok' || !res.record) {
+            showToast(res.message || 'تعذر تسجيل الحضور، حاول مرة أخرى.', 'error');
+            return;
+        }
+
+        const newRecord = res.record;
+
+        document.getElementById('receipt-name').textContent = newRecord.studentName;
+        document.getElementById('receipt-course').textContent = newRecord.course;
+        document.getElementById('receipt-section').textContent = `سيكشن ${newRecord.section}`;
+        document.getElementById('receipt-time').textContent = newRecord.timestamp;
+
+        document.getElementById('student-form-card').classList.add('hidden');
+        document.getElementById('student-receipt-card').classList.remove('hidden');
+
+        showToast('تم تسجيل حضورك وإرساله للدكتور بنجاح!', 'success');
+    } catch (e) {
+        showToast('خطأ في الاتصال بالإنترنت. تأكد من الشبكة وحاول مرة أخرى.', 'error');
+    } finally {
+        isSubmitting = false;
+    }
+}
+
+function resetStudentForm() {
+    document.getElementById('student-name').value = '';
+    document.getElementById('student-pin-input').value = '';
+    document.getElementById('student-receipt-card').classList.add('hidden');
+    document.getElementById('student-form-card').classList.remove('hidden');
+}
+
+// ==========================================
+// 6. UTILITIES (TOASTS & SANITIZATION)
+// ==========================================
+function getToastIconSVG(type) {
+    if (type === 'success') {
+        return '<svg class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>';
+    }
+    if (type === 'error') {
+        return '<svg class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></svg>';
+    }
+    return '<svg class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>';
+}
+
+function showToast(message, type = 'info') {
+    const container = document.getElementById('toast-container');
+    if (!container) return;
+
+    const toast = document.createElement('div');
+
+    const colors = {
+        success: 'bg-emerald-600 text-white border-emerald-700',
+        error: 'bg-rose-600 text-white border-rose-700',
+        info: 'bg-slate-800 text-white border-slate-900'
+    };
+
+    toast.className = `pointer-events-auto flex items-center gap-3 px-4 py-3 rounded-2xl shadow-lg border text-xs font-bold transition-all duration-300 transform translate-y-0 ${colors[type] || colors.info}`;
+    toast.innerHTML = `
+        ${getToastIconSVG(type)}
+        <span class="leading-relaxed">${escapeHTML(message)}</span>
+    `;
+
+    container.appendChild(toast);
+
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(-10px)';
+        setTimeout(() => toast.remove(), 300);
+    }, 3500);
+}
+
+function escapeHTML(str) {
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
