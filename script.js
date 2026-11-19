@@ -1,7 +1,7 @@
 // ==========================================
 // 1. CONSTANTS & STATE MANAGEMENT
 // ==========================================
-const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwrYo_w4c282Nei3l5cSi4f5_FfFHBLC87tmzCyxlrECHoW3CYEMeU6b0aWcsGC8kT6/exec';
+const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwpb0fq6loG5mXKVSnuqn03XuGL4TuqYkX3wermYlEAmGkNZnqQssswX8D7y3bB7W__Bw/exec';
 
 const COURSES = [
     { id: 'python', name: 'بايثون (Python)', code: 'PY' },
@@ -108,7 +108,6 @@ function checkInAppBrowserWarning() {
     }
 }
 
-// Attach subject selection delegation immediately so clicks never miss on any screen size
 document.addEventListener('click', (event) => {
     const subjectBtn = event.target.closest('.subject-select-btn[data-course]');
     if (!subjectBtn) return;
@@ -244,13 +243,44 @@ async function syncDoctorFromCloud(isInitial = false) {
 
     try {
         const prevIds = new Set(attendanceRecords.map(r => r.id));
-        const res = await apiGet({ action: 'getAll', course: requestedCourse });
+        const [recordsRes, sessionsRes] = await Promise.all([
+            apiGet({ action: 'getAll', course: requestedCourse }),
+            apiGet({ action: 'getSessions' })
+        ]);
 
         if (selectedDoctorCourse !== requestedCourse) return;
 
-        if (res.status === 'ok' && Array.isArray(res.records)) {
-            const newEntries = res.records.filter(r => !prevIds.has(r.id));
-            attendanceRecords = res.records;
+        if (sessionsRes.status === 'ok' && Array.isArray(sessionsRes.openSessions)) {
+            openSessionsList = sessionsRes.openSessions;
+
+            // Restore an active session if this course/section is currently open on the server
+            if (!doctorSession) {
+                const sectionSelect = document.getElementById('prof-section');
+                const chosenSection = sectionSelect ? String(sectionSelect.value) : '';
+                const matched =
+                    openSessionsList.find(
+                        s => s.course === requestedCourse && String(s.section) === chosenSection
+                    ) || openSessionsList.find(s => s.course === requestedCourse);
+
+                if (matched) {
+                    doctorSession = matched;
+                    if (sectionSelect) sectionSelect.value = String(matched.section);
+                    updateDoctorSessionUI(false);
+                }
+            } else {
+                const stillOpen = openSessionsList.some(
+                    s => s.sessionId === doctorSession.sessionId
+                );
+                if (!stillOpen) {
+                    doctorSession = null;
+                    updateDoctorSessionUI(true);
+                }
+            }
+        }
+
+        if (recordsRes.status === 'ok' && Array.isArray(recordsRes.records)) {
+            const newEntries = recordsRes.records.filter(r => !prevIds.has(r.id));
+            attendanceRecords = recordsRes.records;
             renderAttendanceTable();
             updateDashboardStats();
 
@@ -324,11 +354,7 @@ function enterDoctorSubject(courseName) {
 }
 
 async function logoutDoctor() {
-    if (doctorSession && isApiConfigured()) {
-        const sessionToClose = doctorSession.sessionId;
-        apiPost({ action: 'stopSession', sessionId: sessionToClose }).catch(() => {});
-    }
-
+    // Switching back to subject selection keeps active sessions open so multiple sessions can run simultaneously.
     stopDoctorPolling();
     closeProjectorModal();
     closeClearConfirmModal();
@@ -343,7 +369,7 @@ async function logoutDoctor() {
     if (tbody) tbody.innerHTML = '';
 
     showSubjectGate();
-    showToast('تم تسجيل الخروج وإغلاق الجلسة بنجاح', 'info');
+    showToast('تم العودة لاختيار المواد مع الإبقاء على الجلسات النشطة مفتوحة', 'info');
 }
 
 // ==========================================
@@ -366,26 +392,36 @@ function generatePIN() {
 async function generateSessionQR() {
     if (!isDoctorPage() || !selectedDoctorCourse) return;
 
-    if (doctorSession && isApiConfigured()) {
-        apiPost({ action: 'stopSession', sessionId: doctorSession.sessionId }).catch(() => {});
-    }
-
-    const section = document.getElementById('prof-section').value;
+    const section = String(document.getElementById('prof-section').value);
     const pin = generatePIN();
-    const sessionId = 'SES-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
+
+    // Reuse existing open session for the exact same course + section if already active, otherwise create a new one
+    const existingSameSlot = openSessionsList.find(
+        s => s.course === selectedDoctorCourse && String(s.section) === section
+    );
+
+    const sessionId = existingSameSlot
+        ? existingSameSlot.sessionId
+        : `SES-${getCourseCodeByName(selectedDoctorCourse)}-S${section}-${Date.now()}`;
 
     doctorSession = {
         sessionId,
         course: selectedDoctorCourse,
-        section: String(section),
+        section,
         pin,
         createdAt: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })
     };
 
+    // Update local open sessions list without closing sessions for other courses/sections
+    openSessionsList = [
+        ...openSessionsList.filter(s => s.sessionId !== sessionId),
+        doctorSession
+    ];
+
     updateDoctorSessionUI(false);
     updateDashboardStats();
 
-    document.getElementById('filter-section').value = String(section);
+    document.getElementById('filter-section').value = section;
     renderAttendanceTable();
 
     if (!isApiConfigured()) {
@@ -410,6 +446,7 @@ async function stopCurrentSession() {
 
     const stoppedSession = doctorSession;
     doctorSession = null;
+    openSessionsList = openSessionsList.filter(s => s.sessionId !== stoppedSession.sessionId);
     closeProjectorModal();
 
     updateDoctorSessionUI(true);
@@ -464,7 +501,8 @@ function updateDoctorSessionUI(wasStopped = false) {
     qrDisplayContainer.classList.remove('hidden');
     if (stopBtn) stopBtn.classList.remove('hidden');
 
-    statusBadge.textContent = 'جلسة نشطة الآن';
+    const activeCount = openSessionsList.length || 1;
+    statusBadge.textContent = `جلسة نشطة (${activeCount} مفتوحة)`;
     statusBadge.className = 'text-xs bg-emerald-500 text-white px-2.5 py-1 rounded-full font-bold';
 
     document.getElementById('qr-badge-info').textContent = `${doctorSession.course} • سيكشن ${doctorSession.section}`;
